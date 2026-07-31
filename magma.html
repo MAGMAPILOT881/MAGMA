@@ -1,0 +1,1360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no" />
+<meta name="theme-color" content="#000000" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<meta name="apple-mobile-web-app-title" content="MAGMA" />
+<meta name="description" content="MAGMA \u2014 dealer gamma exposure terminal." />
+<title>MAGMA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' fill='%23000000'/%3E%3Cpath d='M34 126 L64 54 L90 96 L116 54 L146 126' stroke='%2300FF7F' stroke-width='11' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='90' cy='96' r='6' fill='%234DA3FF'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23000000'/%3E%3Cpath d='M6 23 L12 9 L16 17 L20 9 L26 23' stroke='%2300FF7F' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<style>
+html,body{margin:0;background:#000;-webkit-text-size-adjust:100%;overscroll-behavior-y:none;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+#boot{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+  font-family:'JetBrains Mono',ui-monospace,Menlo,monospace}
+#boot .w{font-size:17px;font-weight:800;letter-spacing:.3em;
+  background:linear-gradient(96deg,#F2F4F8 20%,#4DA3FF 62%,#00FF7F);-webkit-background-clip:text;
+  background-clip:text;-webkit-text-fill-color:transparent}
+#boot .b{width:112px;height:2px;border-radius:9px;background:rgba(255,255,255,.09);overflow:hidden;position:relative}
+#boot .b::after{content:'';position:absolute;inset:0;width:42%;border-radius:9px;
+  background:linear-gradient(90deg,#4DA3FF,#00FF7F);animation:bl 1.05s cubic-bezier(.5,0,.5,1) infinite}
+@keyframes bl{0%{transform:translateX(-115%)}100%{transform:translateX(255%)}}
+::selection{background:rgba(0,255,127,.3)}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"><div id="boot"><div class="w">MAGMA</div><div class="b"></div></div></div>
+<script type="text/babel">
+const { useState, useMemo, useCallback, useEffect, useRef } = React;
+
+
+/* ══════════════════════════════════════════════════════════════
+   MAGMA v5 — Dealer Gamma Exposure Terminal
+   Design system: obsidian glass · tabular mono data · neon structure
+   ══════════════════════════════════════════════════════════════ */
+
+// ───────────────── math ─────────────────
+const SQRT_2PI = Math.sqrt(2 * Math.PI);
+const npdf = (x) => Math.exp(-0.5 * x * x) / SQRT_2PI;
+const ncdf = (x) => {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x)), d = npdf(x);
+  const p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  return x >= 0 ? 1 - p : p;
+};
+const bsGamma = (S, K, T, s) => {
+  if (T <= 0 || s <= 0 || S <= 0 || K <= 0) return 0;
+  const d1 = (Math.log(S / K) + 0.5 * s * s * T) / (s * Math.sqrt(T));
+  return npdf(d1) / (S * s * Math.sqrt(T));
+};
+const bsDelta = (S, K, T, s, c) => {
+  if (T <= 0) return c ? (S > K ? 1 : 0) : (S < K ? -1 : 0);
+  const d1 = (Math.log(S / K) + 0.5 * s * s * T) / (s * Math.sqrt(T));
+  return c ? ncdf(d1) : ncdf(d1) - 1;
+};
+const bsVega = (S, K, T, s) => {
+  if (T <= 0) return 0;
+  const d1 = (Math.log(S / K) + 0.5 * s * s * T) / (s * Math.sqrt(T));
+  return S * npdf(d1) * Math.sqrt(T) * 0.01;
+};
+const bsTheta = (S, K, T, s, c) => {
+  if (T <= 0) return 0;
+  const d1 = (Math.log(S / K) + 0.5 * s * s * T) / (s * Math.sqrt(T)), d2 = d1 - s * Math.sqrt(T);
+  const t1 = -(S * npdf(d1) * s) / (2 * Math.sqrt(T));
+  return (c ? t1 : t1) / 365;
+};
+const bsPrice = (S, K, T, s, c) => {
+  if (T <= 0) return Math.max(0, c ? S - K : K - S);
+  const d1 = (Math.log(S / K) + 0.5 * s * s * T) / (s * Math.sqrt(T)), d2 = d1 - s * Math.sqrt(T);
+  return c ? S * ncdf(d1) - K * ncdf(d2) : K * ncdf(-d2) - S * ncdf(-d1);
+};
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+// ───────────────── format ─────────────────
+function fmtGex(v) {
+  const a = Math.abs(v), s = v < 0 ? "−" : "";
+  if (a >= 1e9) return s + "$" + (a / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return s + "$" + (a / 1e6).toFixed(1) + "M";
+  if (a >= 1e3) return s + "$" + (a / 1e3).toFixed(0) + "K";
+  return s + "$" + a.toFixed(0);
+}
+const p2 = (n) => (n == null || isNaN(n) ? "—" : "$" + (+n).toFixed(2));
+const n2 = (n) => (n == null || isNaN(n) ? "—" : (+n).toFixed(2));
+const usd = (n) => (n < 0 ? "−$" : "$") + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pctS = (n) => (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(1) + "%";
+const dayLabel = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
+const dteOf = (d) => Math.max(0, (d - Date.now()) / 864e5);
+
+// haptics — Android/PWA only; iOS Safari has no Vibration API
+const haptic = (ms = 8) => { try { navigator.vibrate && navigator.vibrate(ms); } catch {} };
+
+// ───────────────── synthetic fallback ─────────────────
+const SYNTH = {
+  SPY: { spot: 738.4, step: 5, iv: .16, oi: 32000 }, QQQ: { spot: 703.1, step: 5, iv: .2, oi: 24000 },
+  IWM: { spot: 244.6, step: 2.5, iv: .22, oi: 15000 }, NVDA: { spot: 214.8, step: 2.5, iv: .38, oi: 20000 },
+  META: { spot: 762.3, step: 5, iv: .3, oi: 9000 }, ORCL: { spot: 231.5, step: 2.5, iv: .34, oi: 8000 },
+  TSLA: { spot: 428.9, step: 5, iv: .48, oi: 26000 }, AAPL: { spot: 268.2, step: 2.5, iv: .26, oi: 22000 },
+};
+const SYN_DTES = [1, 3, 8, 15, 29, 43, 64, 92, 120];
+function synthChain(sym, seed) {
+  const t = SYNTH[sym] || { spot: 100, step: 1, iv: .3, oi: 6000 };
+  const rand = rng(seed);
+  const spot = +(t.spot * (1 + (rand() - .5) * .004)).toFixed(2);
+  const mid = Math.round(spot / t.step) * t.step;
+  const strikes = [];
+  for (let i = -16; i <= 16; i++) strikes.push(+(mid + i * t.step).toFixed(2));
+  const roundish = strikes.filter((k) => k % (t.step * 4) === 0), walls = new Set();
+  while (walls.size < 3 && roundish.length) walls.add(roundish[Math.floor(rand() * roundish.length)]);
+  const now = Date.now();
+  const expiries = SYN_DTES.map((d) => ({ date: new Date(now + d * 864e5), days: d }));
+  const contracts = [];
+  strikes.forEach((K) => expiries.forEach((exp, ei) => {
+    const dist = (K - spot) / spot;
+    const base = t.oi * Math.exp(-Math.pow(dist / .045, 2)) * (1 / (1 + ei * .3)) *
+      (walls.has(K) ? 2.6 + rand() * 1.4 : 1) * (K % (t.step * 2) === 0 ? 1.5 : 1) * (.4 + rand() * 1.2);
+    const iv = (t.iv + Math.max(0, -dist) * .55 + (rand() - .5) * .015) * (1 + ei * .012);
+    const T = exp.days / 365;
+    [["C", true], ["P", false]].forEach(([ty, isC]) => {
+      const theo = bsPrice(spot, K, T, isC ? iv : iv * 1.03, isC);
+      const sp = Math.max(.02, theo * .03);
+      contracts.push({
+        type: ty, strike: K, expiryIdx: ei, expDate: exp.date, days: exp.days,
+        oi: Math.round(base * (isC ? (dist > 0 ? 1.35 : .65) : dist < 0 ? 1.45 : .55)),
+        vol: Math.round(base * .12 * rand()), iv: isC ? iv : iv * 1.03,
+        bid: +Math.max(.01, theo - sp).toFixed(2), ask: +(theo + sp).toFixed(2),
+        last: +theo.toFixed(2), mid: +theo.toFixed(2), quote: "live",
+        spreadPct: (sp * 2) / Math.max(theo, .01), gammaProvided: null,
+      });
+    });
+  }));
+  return { spot, strikes, contracts, expiries, source: "SYNTHETIC", ticker: sym, asOf: new Date() };
+}
+
+// ───────────────── live CBOE ─────────────────
+const OCC_RE = /^([A-Z^.]+?)(\d{6})([CP])(\d{8})$/;
+const INDEX_ROOTS = new Set(["SPX", "SPXW", "NDX", "VIX", "RUT", "XSP", "DJX"]);
+async function fetchCboe(ticker) {
+  const sym = ticker.toUpperCase().trim();
+  const path = INDEX_ROOTS.has(sym) ? "_" + sym : sym;
+  const urls = [
+    `https://cdn.cboe.com/api/global/delayed_quotes/options/${path}.json`,
+    `/cboe/${path}.json`, `/api/cboe?symbol=${encodeURIComponent(path)}`,
+  ];
+  let json = null, lastErr = null;
+  for (const u of urls) {
+    try { const r = await fetch(u); if (!r.ok) throw new Error("HTTP " + r.status); json = await r.json(); break; }
+    catch (e) { lastErr = e; }
+  }
+  if (!json) throw lastErr || new Error("fetch failed");
+  const d = json?.data, spot = d?.current_price ?? d?.close, raw = d?.options;
+  if (!spot || !Array.isArray(raw) || !raw.length) throw new Error("empty chain");
+
+  const now = Date.now(), parsed = [], expSet = new Set();
+  for (const o of raw) {
+    const m = OCC_RE.exec(o.option || ""); if (!m) continue;
+    const [, , ymd, cp, kRaw] = m;
+    const expDate = new Date(2000 + +ymd.slice(0, 2), +ymd.slice(2, 4) - 1, +ymd.slice(4, 6), 16, 0, 0);
+    const days = (expDate - now) / 864e5;
+    if (days < -.5 || days > 400) continue;
+    const oi = o.open_interest ?? 0;
+    const bid = +(o.bid ?? 0), ask = +(o.ask ?? 0), last = +(o.last_trade_price ?? 0);
+    let mid = 0, quote = "none";
+    if (bid > 0 && ask > 0 && ask >= bid) { mid = (bid + ask) / 2; quote = "live"; }
+    else if (ask > 0 && bid === 0) { mid = ask / 2; quote = "wide"; }
+    else if (last > 0) { mid = last; quote = "stale"; }
+    if (mid <= 0) continue;
+    parsed.push({
+      type: cp, strike: +kRaw / 1000, expDate, days: Math.max(days, .25), oi,
+      vol: o.volume ?? 0, iv: o.iv ?? .25, bid, ask, last, mid, quote,
+      spreadPct: bid > 0 && ask > 0 ? (ask - bid) / ((ask + bid) / 2) : null,
+      gammaProvided: typeof o.gamma === "number" ? o.gamma : null,
+    });
+    expSet.add(expDate.getTime());
+  }
+  if (!parsed.length) throw new Error("no valid contracts");
+  const expTimes = [...expSet].sort((a, b) => a - b);
+  const expIdx = new Map(expTimes.map((t, i) => [t, i]));
+  const expiries = expTimes.map((t) => ({ date: new Date(t), days: Math.max((new Date(t) - now) / 864e5, .25) }));
+  const contracts = parsed.map((c) => ({ ...c, expiryIdx: expIdx.get(c.expDate.getTime()) }));
+  const strikes = [...new Set(contracts.map((c) => c.strike))].sort((a, b) => a - b);
+  return { spot, strikes, contracts, expiries, source: "LIVE", ticker: sym, asOf: new Date() };
+}
+
+// ───────────────── GEX engine ─────────────────
+function computeGEX(chain) {
+  const { spot, contracts } = chain;
+  const strikes = chain.strikes.filter((k) => Math.abs(k - spot) / spot <= .09);
+  const set = new Set(strikes), cellMap = {}, byStrike = {};
+  strikes.forEach((k) => (byStrike[k] = { net: 0, call: 0, put: 0 }));
+  contracts.forEach((c) => {
+    if (!set.has(c.strike) || c.days > 60) return;
+    const T = Math.max(c.days, .25) / 365;
+    const g = c.gammaProvided ?? bsGamma(spot, c.strike, T, c.iv || .25);
+    const dollar = g * c.oi * 100 * spot * spot * .01;
+    const signed = c.type === "C" ? dollar : -dollar;
+    const key = c.strike + "|" + c.expiryIdx;
+    cellMap[key] = (cellMap[key] || 0) + signed;
+    byStrike[c.strike].net += signed;
+    if (c.type === "C") byStrike[c.strike].call += dollar; else byStrike[c.strike].put -= dollar;
+  });
+  let flip = null, cum = 0;
+  const cums = strikes.map((k) => (cum += byStrike[k].net));
+  for (let i = 1; i < strikes.length; i++)
+    if (cums[i - 1] < 0 && cums[i] >= 0) {
+      const f = -cums[i - 1] / (cums[i] - cums[i - 1]);
+      flip = strikes[i - 1] + f * (strikes[i] - strikes[i - 1]); break;
+    }
+  if (flip === null && strikes.length) flip = cums[cums.length - 1] > 0 ? strikes[0] : strikes[strikes.length - 1];
+  let callWall = null, putWall = null, cw = 0, pw = 0;
+  strikes.forEach((k) => {
+    if (byStrike[k].call > cw) { cw = byStrike[k].call; callWall = k; }
+    if (Math.abs(byStrike[k].put) > pw) { pw = Math.abs(byStrike[k].put); putWall = k; }
+  });
+  const upLadder = strikes.filter((k) => k > spot).sort((a, b) => Math.abs(byStrike[b].net) - Math.abs(byStrike[a].net)).slice(0, 3).sort((a, b) => a - b);
+  const downLadder = strikes.filter((k) => k < spot).sort((a, b) => Math.abs(byStrike[b].net) - Math.abs(byStrike[a].net)).slice(0, 3).sort((a, b) => b - a);
+  const totalNet = strikes.reduce((s, k) => s + byStrike[k].net, 0);
+  const maxAbsStrike = Math.max(1, ...strikes.map((k) => Math.abs(byStrike[k].net)));
+  const maxCall = Math.max(1, ...strikes.map((k) => byStrike[k].call));
+  const maxPut = Math.max(1, ...strikes.map((k) => Math.abs(byStrike[k].put)));
+
+  let bias = "NEUTRAL", biasNote = "", biasKind = "neutral";
+  if (flip != null && callWall != null && putWall != null) {
+    const room = (callWall - spot) / spot;
+    if (spot < flip) { bias = "BEARISH"; biasKind = "bear"; biasNote = `Spot is trading beneath the gamma flip at ${p2(flip)}. In this regime dealer hedging amplifies rather than absorbs order flow — selling begets selling. Downside stays open toward the put wall at ${p2(putWall)} until ${p2(flip)} is reclaimed.`; }
+    else if (room < .004) { bias = "CAPPED"; biasKind = "capped"; biasNote = `Spot is pressed directly into the ${p2(callWall)} call wall — the single largest positive gamma node. Dealers are heavily long gamma here and sell into strength, which pins price and stalls rallies. Upside requires absorbing that entire node.` }
+    else if ((spot - flip) / spot < .003) { bias = "UNDECIDED"; biasKind = "neutral"; biasNote = `Spot is sitting on the gamma flip at ${p2(flip)} — the pivot between dampening and amplifying hedging flows. Regime is unresolved and directional conviction here is the least reliable it will be all session.` }
+    else { bias = "BULLISH"; biasKind = "bull"; biasNote = `Spot holds above the gamma flip at ${p2(flip)}, so dealer hedging dampens pullbacks — dips get mechanically absorbed. Path of least resistance runs toward the call wall at ${p2(callWall)}, which caps the move.` }
+  }
+  return { cellMap, byStrike, strikes, flip, callWall, putWall, totalNet, maxAbsStrike, maxCall, maxPut, upLadder, downLadder, bias, biasNote, biasKind };
+}
+
+// snapshot for journal mini-charts
+function snapGEX(chain, gex) {
+  const near = gex.strikes.filter((k) => Math.abs(k - chain.spot) / chain.spot <= .045).slice(0, 15);
+  return { spot: chain.spot, flip: gex.flip, cw: gex.callWall, pw: gex.putWall,
+    bars: near.map((k) => ({ k, c: gex.byStrike[k].call, p: gex.byStrike[k].put })) };
+}
+
+// ───────────────── screener ─────────────────
+function screen(chain, gex, o) {
+  const out = [];
+  chain.contracts.forEach((c) => {
+    if (c.days < o.minDte || c.days > o.maxDte || c.oi < o.minOi || !c.mid || c.mid < .05) return;
+    if (o.liveOnly && c.quote !== "live") return;
+    const isCall = c.type === "C";
+    if (o.side !== "both" && ((o.side === "calls") !== isCall)) return;
+    const ladder = isCall ? gex.upLadder : gex.downLadder;
+    const beyond = ladder.filter((k) => (isCall ? k > c.strike : k < c.strike));
+    const target = beyond.length ? (isCall ? Math.max(...beyond) : Math.min(...beyond)) : isCall ? gex.callWall : gex.putWall;
+    if (!target || (isCall ? target <= c.strike : target >= c.strike)) return;
+    const reward = (isCall ? target - c.strike : c.strike - target) - c.mid;
+    if (reward <= 0) return;
+    const rr = reward / c.mid, moveNeeded = Math.abs(target - chain.spot) / chain.spot;
+    const feas = Math.exp(-Math.pow(moveNeeded / (.012 * Math.sqrt(Math.max(c.days, .5))), 2) / 8);
+    out.push({ ...c, isCall, target, rr, moveNeeded, breakeven: isCall ? c.strike + c.mid : c.strike - c.mid,
+      score: rr * feas * (c.quote === "live" ? 1 : .6), expLabel: dayLabel(c.expDate) });
+  });
+  return out.sort((a, b) => b.score - a.score).slice(0, 30);
+}
+
+// ───────────────── storage ─────────────────
+const store = {
+  get(k, f) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : f; } catch { return f; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const ACCT_KEY = "magma_acct_v3", WATCH_KEY = "magma_watch_v3";
+const DEFAULT_ACCT = { cash: 100000, positions: [], closed: [] };
+function acctStats(a) {
+  const c = a.closed, n = c.length, wins = c.filter((x) => x.pnl > 0).length;
+  const total = c.reduce((s, x) => s + x.pnl, 0);
+  const rs = c.map((x) => x.pnl / Math.max(1, x.entryMid * 100 * x.qty));
+  const ans = c.filter((x) => x.levelRespected != null);
+  return { n, winRate: n ? wins / n : null, total,
+    avgR: rs.length ? rs.reduce((p, q) => p + q, 0) / rs.length : 0,
+    expectancy: n ? total / n : null,
+    levelAcc: ans.length ? ans.filter((x) => x.levelRespected).length / ans.length : null };
+}
+
+/* ══════════════════ DESIGN SYSTEM ══════════════════
+   Obsidian base · glass surfaces · 1px hairlines
+   8pt spacing scale · radii step 24→16→10→6
+   ══════════════════════════════════════════════════ */
+const T = {
+  // surfaces
+  void: "#000000", obsidian: "#0A0A0C", raise: "#101014",
+  hair: "rgba(255,255,255,0.08)", hairSoft: "rgba(255,255,255,0.045)",
+  glass: "rgba(12,12,15,0.72)",
+  // text
+  fg: "#F2F4F8", fg2: "#9AA3B2", fg3: "#5C6472", fg4: "#3A404B",
+  // data
+  up: "#00FF7F", upDim: "rgba(0,255,127,0.13)", upGlow: "rgba(0,255,127,0.35)",
+  dn: "#FF0055", dnDim: "rgba(255,0,85,0.13)", dnGlow: "rgba(255,0,85,0.32)",
+  flip: "#4DA3FF", flipGlow: "rgba(77,163,255,0.45)",
+  amber: "#FFB020", warn: "#FF6B35",
+};
+const R = { xl: 24, lg: 16, md: 10, sm: 6 };
+const SP = { 1: 4, 2: 8, 3: 12, 4: 16, 5: 20, 6: 24, 8: 32 };
+
+const CSS = `
+:root{color-scheme:dark}
+*{-webkit-tap-highlight-color:transparent;box-sizing:border-box}
+.mg{
+  min-height:100vh;color:${T.fg};
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',sans-serif;
+  font-feature-settings:'cv02','cv03','cv04','ss01';
+  background:
+    radial-gradient(1000px 520px at 50% -12%,rgba(77,163,255,.055),transparent 62%),
+    radial-gradient(760px 460px at 100% 106%,rgba(0,255,127,.032),transparent 60%),
+    radial-gradient(760px 460px at 0% 100%,rgba(255,0,85,.028),transparent 60%),
+    ${T.void};
+  max-width:780px;margin:0 auto;
+  padding:calc(60px + env(safe-area-inset-top)) ${SP[4]}px calc(96px + env(safe-area-inset-bottom));
+}
+.mono{font-family:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;font-variant-numeric:tabular-nums lining-nums;font-feature-settings:'tnum' 1,'zero' 1}
+.tnum{font-variant-numeric:tabular-nums lining-nums}
+
+/* ── surfaces ── */
+.card{background:linear-gradient(180deg,rgba(255,255,255,.028),rgba(255,255,255,.008));
+  border:1px solid ${T.hair};border-radius:${R.lg}px;
+  box-shadow:0 1px 0 rgba(255,255,255,.05) inset,0 18px 44px -18px rgba(0,0,0,.9)}
+.card-xl{border-radius:${R.xl}px}
+.glass{background:${T.glass};backdrop-filter:blur(22px) saturate(180%);-webkit-backdrop-filter:blur(22px) saturate(180%)}
+.hair{border-color:${T.hair}}
+.divide>*+*{border-top:1px solid ${T.hairSoft}}
+
+/* ── app bar ── */
+.appbar{position:fixed;top:0;left:0;right:0;z-index:40;
+  padding:max(10px,env(safe-area-inset-top)) ${SP[4]}px 10px;
+  border-bottom:1px solid ${T.hair};
+  display:flex;align-items:center;gap:${SP[3]}px;max-width:780px;margin:0 auto}
+.wordmark{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:15px;letter-spacing:.26em;
+  background:linear-gradient(96deg,${T.fg} 20%,${T.flip} 62%,${T.up});
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+
+/* ── nav ── */
+.nav{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;
+  border-top:1px solid ${T.hair};padding-bottom:env(safe-area-inset-bottom);max-width:780px;margin:0 auto}
+.nav button{flex:1;background:none;border:0;cursor:pointer;padding:10px 2px 9px;
+  display:flex;flex-direction:column;align-items:center;gap:4px;color:${T.fg4};
+  font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.13em;
+  transition:color .16s cubic-bezier(.2,.8,.2,1);position:relative}
+.nav button.on{color:${T.fg}}
+.nav button.on::before{content:'';position:absolute;top:0;left:26%;right:26%;height:2px;border-radius:0 0 3px 3px;
+  background:linear-gradient(90deg,${T.flip},${T.up});box-shadow:0 0 12px ${T.flipGlow}}
+.nav svg{width:20px;height:20px}
+.nav button:active{transform:scale(.94)}
+
+/* ── press states ── */
+.press{transition:transform .11s cubic-bezier(.2,.8,.2,1),opacity .11s ease}
+.press:active{transform:scale(.98);opacity:.8}
+.press-sm:active{transform:scale(.96);opacity:.75}
+
+/* ── controls ── */
+.btn{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:.08em;
+  padding:11px 16px;border-radius:${R.md}px;cursor:pointer;border:1px solid ${T.hair};
+  background:rgba(255,255,255,.035);color:${T.fg2};
+  transition:transform .11s cubic-bezier(.2,.8,.2,1),background .16s,color .16s,border-color .16s}
+.btn:active{transform:scale(.97);opacity:.85}
+.btn.pri{background:linear-gradient(180deg,#FFFFFF,#D7DCE5);color:#07070A;border-color:transparent;font-weight:800;
+  box-shadow:0 6px 22px -8px rgba(255,255,255,.5)}
+.btn.up{background:${T.upDim};color:${T.up};border-color:rgba(0,255,127,.34)}
+.btn.dn{background:${T.dnDim};color:${T.dn};border-color:rgba(255,0,85,.34)}
+.btn:disabled{opacity:.4}
+.chip{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;white-space:nowrap;
+  padding:8px 13px;border-radius:${R.md}px;border:1px solid ${T.hair};background:rgba(255,255,255,.028);
+  color:${T.fg3};cursor:pointer;transition:all .16s cubic-bezier(.2,.8,.2,1)}
+.chip:active{transform:scale(.96)}
+.chip.on{background:rgba(255,255,255,.1);color:${T.fg};border-color:rgba(255,255,255,.22)}
+.inp{background:rgba(255,255,255,.04);border:1px solid ${T.hair};border-radius:${R.md}px;color:${T.fg};
+  font-family:'JetBrains Mono',monospace;font-size:16px;padding:12px 14px;width:100%;
+  transition:border-color .16s,background .16s}
+.inp:focus{outline:0;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.06)}
+.xrow{display:flex;gap:${SP[2]}px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.xrow::-webkit-scrollbar{display:none}
+
+/* ── labels ── */
+.lbl{font-family:'JetBrains Mono',monospace;font-size:8.5px;font-weight:700;letter-spacing:.16em;
+  text-transform:uppercase;color:${T.fg4}}
+
+/* ── pill badges (float over chart) ── */
+.pill{position:absolute;display:inline-flex;align-items:center;gap:5px;
+  font-family:'JetBrains Mono',monospace;font-size:9.5px;font-weight:800;letter-spacing:.06em;
+  padding:4px 9px;border-radius:999px;white-space:nowrap;z-index:3;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.pill-cw{background:rgba(0,255,127,.14);color:${T.up};border:1px solid rgba(0,255,127,.42);box-shadow:0 0 18px -4px ${T.upGlow}}
+.pill-pw{background:rgba(255,0,85,.14);color:${T.dn};border:1px solid rgba(255,0,85,.42);box-shadow:0 0 18px -4px ${T.dnGlow}}
+.pill-fl{background:rgba(77,163,255,.16);color:${T.flip};border:1px solid rgba(77,163,255,.5);box-shadow:0 0 22px -3px ${T.flipGlow}}
+.pill-spot{background:rgba(255,255,255,.1);color:${T.fg};border:1px solid rgba(255,255,255,.24)}
+
+/* ── skeletons ── */
+.skel{position:relative;overflow:hidden;background:rgba(255,255,255,.045);border-radius:${R.sm}px}
+.skel::after{content:'';position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.09),transparent);
+  animation:shimmer 1.5s infinite}
+@keyframes shimmer{100%{transform:translateX(100%)}}
+
+/* ── number flash ── */
+.flash-up{animation:fu .34s ease-out}
+.flash-dn{animation:fd .34s ease-out}
+@keyframes fu{0%{color:${T.up};text-shadow:0 0 14px ${T.upGlow}}100%{}}
+@keyframes fd{0%{color:${T.dn};text-shadow:0 0 14px ${T.dnGlow}}100%{}}
+
+/* ── sheets ── */
+.scrim{position:fixed;inset:0;z-index:60;display:flex;align-items:flex-end;justify-content:center;
+  background:rgba(0,0,0,.62);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);animation:sfade .2s ease both}
+.sheet{width:100%;max-width:560px;max-height:90vh;overflow-y:auto;
+  border-radius:${R.xl}px ${R.xl}px 0 0;padding:${SP[3]}px ${SP[5]}px calc(${SP[6]}px + env(safe-area-inset-bottom));
+  background:linear-gradient(180deg,#14141A,#08080B);border:1px solid ${T.hair};border-bottom:0;
+  box-shadow:0 -30px 80px -20px rgba(0,0,0,.95);
+  animation:rise .3s cubic-bezier(.2,.9,.25,1) both}
+.grab{width:36px;height:4px;border-radius:99px;background:rgba(255,255,255,.18);margin:0 auto ${SP[5]}px}
+@keyframes rise{from{transform:translateY(30px);opacity:.4}to{transform:none;opacity:1}}
+@keyframes sfade{from{opacity:0}to{opacity:1}}
+
+/* ── shutter (journal snapshot) ── */
+.shutter{position:fixed;inset:0;z-index:90;pointer-events:none;background:#fff;animation:shut .42s ease-out both}
+@keyframes shut{0%{opacity:0}12%{opacity:.82}100%{opacity:0}}
+
+/* ── chain rows ── */
+.crow{display:grid;grid-template-columns:1fr 78px 1fr;position:relative;
+  transition:transform .26s cubic-bezier(.2,.85,.25,1)}
+.cside{padding:9px 10px;text-align:center;transition:background .14s}
+.cside:active{background:rgba(255,255,255,.05)}
+.cstrike{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1px;
+  background:rgba(255,255,255,.035);border-left:1px solid ${T.hairSoft};border-right:1px solid ${T.hairSoft}}
+.creveal{position:absolute;inset:0;display:flex;align-items:center;padding:0 ${SP[4]}px;gap:${SP[4]}px;
+  background:linear-gradient(90deg,#0D0D11,#131319);z-index:0}
+
+.fade{animation:fu2 .26s cubic-bezier(.2,.8,.2,1) both}
+@keyframes fu2{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.qd{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:5px;vertical-align:1px}
+.livedot{display:inline-block;width:6px;height:6px;border-radius:50%;background:${T.up};
+  box-shadow:0 0 9px ${T.upGlow};animation:lp 2s ease-in-out infinite}
+@keyframes lp{0%,100%{opacity:1}50%{opacity:.35}}
+::-webkit-scrollbar{width:7px;height:7px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.13);border-radius:99px}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+`;
+
+// ───────────────── primitives ─────────────────
+function Num({ v, fmt = n2, cls = "", style }) {
+  const prev = useRef(v);
+  const [fx, setFx] = useState("");
+  useEffect(() => {
+    if (prev.current !== v && typeof v === "number" && typeof prev.current === "number") {
+      setFx(v > prev.current ? "flash-up" : "flash-dn");
+      const t = setTimeout(() => setFx(""), 360);
+      prev.current = v;
+      return () => clearTimeout(t);
+    }
+    prev.current = v;
+  }, [v]);
+  return <span className={`mono ${fx} ${cls}`} style={style}>{fmt(v)}</span>;
+}
+
+const Skel = ({ w = "100%", h = 12, r = 6, style }) =>
+  <div className="skel" style={{ width: w, height: h, borderRadius: r, ...style }} />;
+
+function SkelChain() {
+  return (
+    <div className="card" style={{ overflow: "hidden" }}>
+      {Array.from({ length: 9 }).map((_, i) => (
+        <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 78px 1fr", padding: "11px 12px", gap: 10,
+          borderBottom: i < 8 ? `1px solid ${T.hairSoft}` : "none", alignItems: "center" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5, alignItems: "center" }}>
+            <Skel w="52%" h={12} /><Skel w="70%" h={8} />
+          </div>
+          <Skel w="60%" h={14} style={{ margin: "0 auto" }} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 5, alignItems: "center" }}>
+            <Skel w="52%" h={12} /><Skel w="70%" h={8} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const Ico = {
+  map: <><path d="M12 3v18" strokeWidth="1.6" opacity=".4" /><path d="M12 7h6M12 11h4M12 15h7" strokeWidth="2" strokeLinecap="round" /><path d="M12 9H7M12 13H5M12 17H8" strokeWidth="2" strokeLinecap="round" /></>,
+  chain: <><rect x="3.5" y="4" width="17" height="16" rx="2.4" strokeWidth="1.6" /><path d="M9.5 4v16M14.5 4v16" strokeWidth="1.3" opacity=".55" /></>,
+  screen: <><circle cx="11" cy="11" r="6.4" strokeWidth="1.7" /><path d="M15.8 15.8L21 21" strokeWidth="2" strokeLinecap="round" /></>,
+  book: <><path d="M5.5 4.5h13v15h-13z" strokeWidth="1.6" /><path d="M9 8.5h6M9 12h6M9 15.5h3.5" strokeWidth="1.5" strokeLinecap="round" /></>,
+  wallet: <><rect x="3" y="6" width="18" height="13" rx="2.6" strokeWidth="1.6" /><path d="M3 10h18" strokeWidth="1.4" opacity=".6" /><circle cx="16.5" cy="14" r="1.3" fill="currentColor" stroke="none" /></>,
+};
+const NIco = ({ d }) => <svg viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeLinejoin="round">{d}</svg>;
+
+const BullIco = ({ c }) => (
+  <svg viewBox="0 0 32 32" style={{ width: 30, height: 30, filter: `drop-shadow(0 0 9px ${c}66)` }} fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 23l7-8 5 4.5L27 8" /><path d="M20 8h7v7" />
+  </svg>
+);
+const BearIco = ({ c }) => (
+  <svg viewBox="0 0 32 32" style={{ width: 30, height: 30, filter: `drop-shadow(0 0 9px ${c}66)` }} fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 9l7 8 5-4.5L27 24" /><path d="M20 24h7v-7" />
+  </svg>
+);
+const FlatIco = ({ c }) => (
+  <svg viewBox="0 0 32 32" style={{ width: 30, height: 30, filter: `drop-shadow(0 0 9px ${c}66)` }} fill="none" stroke={c} strokeWidth="2" strokeLinecap="round">
+    <path d="M4 16h24" /><path d="M9 11l-5 5 5 5M23 11l5 5-5 5" />
+  </svg>
+);
+const QUALITY = {
+  live: { c: T.up, label: "Live two-sided quote" },
+  wide: { c: T.amber, label: "One-sided — no bid" },
+  stale: { c: T.dn, label: "Stale — last trade, not a quote" },
+  none: { c: T.fg4, label: "No quote" },
+};
+
+/* ══════════════ HERO 1 — GEX MAP DASHBOARD ══════════════
+   Vertical diverging heat map. Central axis = spot.
+   Calls extend right (neon green), puts extend left (crimson).
+   Floating pill badges overlap the chart for flip / walls / spot.
+   ═════════════════════════════════════════════════════════ */
+function GexMap({ chain, gex, height = 420 }) {
+  const strikes = useMemo(() => [...gex.strikes].sort((a, b) => b - a), [gex.strikes]);
+  if (!strikes.length) return null;
+  const rowH = Math.max(13, Math.min(26, height / strikes.length));
+  const H = strikes.length * rowH;
+  const hi = strikes[0], lo = strikes[strikes.length - 1];
+  const yOf = (price) => ((hi - price) / (hi - lo || 1)) * (H - rowH) + rowH / 2;
+  const maxSide = Math.max(gex.maxCall, gex.maxPut);
+
+  return (
+    <div className="card card-xl" style={{ padding: `${SP[5]}px ${SP[4]}px ${SP[4]}px`, position: "relative", overflow: "hidden" }}>
+      {/* ambient glow behind the flip */}
+      {gex.flip != null && (
+        <div style={{ position: "absolute", left: "50%", top: yOf(gex.flip) + 46, width: 300, height: 120,
+          transform: "translate(-50%,-50%)", background: `radial-gradient(ellipse,${T.flipGlow},transparent 68%)`,
+          filter: "blur(26px)", pointerEvents: "none", zIndex: 0 }} />
+      )}
+
+      <div style={{ display: "flex", alignItems: "baseline", marginBottom: SP[4], position: "relative", zIndex: 2 }}>
+        <span className="lbl">Gamma Exposure Profile</span>
+        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: T.fg3 }}>
+          ≤60 DTE · $ per 1% move
+        </span>
+      </div>
+
+      {/* axis legend */}
+      <div style={{ display: "flex", marginBottom: SP[2], position: "relative", zIndex: 2 }}>
+        <div style={{ flex: 1, textAlign: "left" }}>
+          <span className="mono" style={{ fontSize: 9, color: T.dn, fontWeight: 700, letterSpacing: ".1em" }}>◀ PUT γ</span>
+        </div>
+        <div style={{ flex: 1, textAlign: "right" }}>
+          <span className="mono" style={{ fontSize: 9, color: T.up, fontWeight: 700, letterSpacing: ".1em" }}>CALL γ ▶</span>
+        </div>
+      </div>
+
+      <div style={{ position: "relative", height: H, zIndex: 2 }}>
+        {/* center axis */}
+        <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1,
+          background: `linear-gradient(180deg,transparent,${T.hair} 12%,${T.hair} 88%,transparent)`, zIndex: 1 }} />
+
+        {strikes.map((k, i) => {
+          const row = gex.byStrike[k];
+          const cw = (row.call / maxSide) * 46, pw = (Math.abs(row.put) / maxSide) * 46;
+          const isCW = k === gex.callWall, isPW = k === gex.putWall;
+          const dim = !isCW && !isPW;
+          return (
+            <div key={k} style={{ position: "absolute", top: i * rowH, left: 0, right: 0, height: rowH,
+              display: "flex", alignItems: "center" }}>
+              {/* put side (extends left from center) */}
+              <div style={{ flex: 1, display: "flex", justifyContent: "flex-end", paddingRight: 1 }}>
+                <div style={{ width: `${pw}%`, height: rowH - 5, borderRadius: `${R.sm}px 0 0 ${R.sm}px`,
+                  background: isPW ? `linear-gradient(270deg,${T.dn},rgba(255,0,85,.42))`
+                    : `linear-gradient(270deg,rgba(255,0,85,${dim ? .5 : .8}),rgba(255,0,85,.12))`,
+                  boxShadow: isPW ? `0 0 20px -3px ${T.dnGlow}` : "none",
+                  transition: "width .5s cubic-bezier(.2,.8,.2,1)" }} />
+              </div>
+              {/* call side */}
+              <div style={{ flex: 1, display: "flex", justifyContent: "flex-start", paddingLeft: 1 }}>
+                <div style={{ width: `${cw}%`, height: rowH - 5, borderRadius: `0 ${R.sm}px ${R.sm}px 0`,
+                  background: isCW ? `linear-gradient(90deg,${T.up},rgba(0,255,127,.42))`
+                    : `linear-gradient(90deg,rgba(0,255,127,${dim ? .5 : .8}),rgba(0,255,127,.12))`,
+                  boxShadow: isCW ? `0 0 20px -3px ${T.upGlow}` : "none",
+                  transition: "width .5s cubic-bezier(.2,.8,.2,1)" }} />
+              </div>
+            </div>
+          );
+        })}
+
+        {/* ── structural lines + floating pills ── */}
+        {gex.flip != null && (
+          <>
+            <div style={{ position: "absolute", left: 0, right: 0, top: yOf(gex.flip), height: 1.5, zIndex: 4,
+              background: `linear-gradient(90deg,transparent,${T.flip} 14%,${T.flip} 86%,transparent)`,
+              boxShadow: `0 0 16px ${T.flipGlow}` }} />
+            <div className="pill pill-fl" style={{ left: "50%", top: yOf(gex.flip), transform: "translate(-50%,-50%)" }}>
+              γ-FLIP {gex.flip.toFixed(1)}
+            </div>
+          </>
+        )}
+        {gex.callWall != null && (
+          <div className="pill pill-cw" style={{ right: 0, top: yOf(gex.callWall), transform: "translateY(-50%)" }}>
+            CALL WALL {gex.callWall}
+          </div>
+        )}
+        {gex.putWall != null && (
+          <div className="pill pill-pw" style={{ left: 0, top: yOf(gex.putWall), transform: "translateY(-50%)" }}>
+            PUT WALL {gex.putWall}
+          </div>
+        )}
+        {/* spot */}
+        <div style={{ position: "absolute", left: 0, right: 0, top: yOf(chain.spot), height: 1, zIndex: 4,
+          borderTop: `1px dashed rgba(255,255,255,.42)` }} />
+        <div className="pill pill-spot" style={{ left: "50%", top: yOf(chain.spot) - 16, transform: "translate(-50%,-50%)" }}>
+          SPOT {chain.spot.toFixed(2)}
+        </div>
+      </div>
+
+      {/* strike scale */}
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: SP[3], position: "relative", zIndex: 2 }}>
+        <span className="mono" style={{ fontSize: 9.5, color: T.fg4 }}>{lo}</span>
+        <span className="mono" style={{ fontSize: 9.5, color: T.fg4 }}>strike ladder</span>
+        <span className="mono" style={{ fontSize: 9.5, color: T.fg4 }}>{hi}</span>
+      </div>
+    </div>
+  );
+}
+
+/* ── mini snapshot chart for journal entries ── */
+function MiniGex({ snap, w = 260, h = 76 }) {
+  if (!snap?.bars?.length) return null;
+  const max = Math.max(1, ...snap.bars.map((b) => Math.max(b.c, Math.abs(b.p))));
+  const bw = w / snap.bars.length;
+  const lo = snap.bars[0].k, hi = snap.bars[snap.bars.length - 1].k;
+  const xOf = (k) => ((k - lo) / (hi - lo || 1)) * w;
+  return (
+    <svg width={w} height={h} style={{ display: "block", overflow: "visible" }}>
+      <line x1="0" y1={h / 2} x2={w} y2={h / 2} stroke={T.hair} strokeWidth="1" />
+      {snap.bars.map((b, i) => {
+        const ch = (b.c / max) * (h / 2 - 3), ph = (Math.abs(b.p) / max) * (h / 2 - 3);
+        return (
+          <g key={i}>
+            <rect x={i * bw + 1} y={h / 2 - ch} width={bw - 2} height={ch} fill={T.up} opacity=".8" rx="1.5" />
+            <rect x={i * bw + 1} y={h / 2} width={bw - 2} height={ph} fill={T.dn} opacity=".8" rx="1.5" />
+          </g>
+        );
+      })}
+      {snap.flip != null && snap.flip >= lo && snap.flip <= hi && (
+        <line x1={xOf(snap.flip)} y1="0" x2={xOf(snap.flip)} y2={h} stroke={T.flip} strokeWidth="1.5" strokeDasharray="3 2" />
+      )}
+      {snap.spot != null && snap.spot >= lo && snap.spot <= hi && (
+        <line x1={xOf(snap.spot)} y1="0" x2={xOf(snap.spot)} y2={h} stroke="rgba(255,255,255,.6)" strokeWidth="1" />
+      )}
+    </svg>
+  );
+}
+
+/* ══════════════ HERO 2 — OPTION CHAIN ══════════════
+   Sticky centre strike column · calls left / puts right
+   Horizontal swipe on a row reveals quote quality + greeks
+   ════════════════════════════════════════════════════ */
+function ChainRow({ k, cc, pp, spot, isCW, isPW, isATM, onPick }) {
+  const [dx, setDx] = useState(0);
+  const [open, setOpen] = useState(false);
+  const start = useRef(null);
+  const REVEAL = 148;
+
+  const onStart = (e) => { start.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, base: open ? -REVEAL : 0, lock: null }; };
+  const onMove = (e) => {
+    const s = start.current; if (!s) return;
+    const mx = e.touches[0].clientX - s.x, my = e.touches[0].clientY - s.y;
+    if (s.lock === null) { if (Math.abs(mx) > 8 || Math.abs(my) > 8) s.lock = Math.abs(mx) > Math.abs(my) ? "x" : "y"; }
+    if (s.lock !== "x") return;
+    const next = Math.max(-REVEAL, Math.min(0, s.base + mx));
+    setDx(next);
+  };
+  const onEnd = () => {
+    const s = start.current; start.current = null;
+    if (s?.lock !== "x") { setDx(open ? -REVEAL : 0); return; }
+    const shouldOpen = dx < -REVEAL * 0.4;
+    setOpen(shouldOpen); setDx(shouldOpen ? -REVEAL : 0);
+    haptic(6);
+  };
+
+  const side = (c, itm, isCall) => (
+    <div className="cside" onClick={() => c && (haptic(8), onPick(c, isCall))}
+      style={{ background: itm ? "rgba(255,255,255,.028)" : "transparent", opacity: c ? 1 : .25 }}>
+      {c ? (<>
+        <div className="mono" style={{ fontSize: 13.5, fontWeight: 700, letterSpacing: "-.02em" }}>
+          <span className="qd" style={{ background: QUALITY[c.quote].c }} />{c.mid.toFixed(2)}
+        </div>
+        <div className="mono" style={{ fontSize: 9, color: T.fg4, marginTop: 2 }}>
+          {c.bid > 0 || c.ask > 0 ? `${c.bid.toFixed(2)}×${c.ask.toFixed(2)}` : "no quote"}
+        </div>
+      </>) : <div className="mono" style={{ fontSize: 11, color: T.fg4 }}>—</div>}
+    </div>
+  );
+
+  const g = (c) => {
+    if (!c) return null;
+    const T_ = Math.max(c.days, .25) / 365;
+    return { d: bsDelta(spot, c.strike, T_, c.iv || .25, c.type === "C"),
+             g: c.gammaProvided ?? bsGamma(spot, c.strike, T_, c.iv || .25),
+             t: bsTheta(spot, c.strike, T_, c.iv || .25, c.type === "C"),
+             v: bsVega(spot, c.strike, T_, c.iv || .25) };
+  };
+  const gc = g(cc), gp = g(pp);
+
+  return (
+    <div style={{ position: "relative", overflow: "hidden", borderBottom: `1px solid ${T.hairSoft}` }}>
+      {/* reveal layer */}
+      <div className="creveal">
+        <div style={{ flex: 1 }}>
+          <div className="lbl" style={{ marginBottom: 4 }}>Quality</div>
+          <div className="mono" style={{ fontSize: 10, color: cc ? QUALITY[cc.quote].c : T.fg4 }}>
+            C · {cc ? QUALITY[cc.quote].label.split(" ")[0] : "—"}
+          </div>
+          <div className="mono" style={{ fontSize: 10, color: pp ? QUALITY[pp.quote].c : T.fg4, marginTop: 2 }}>
+            P · {pp ? QUALITY[pp.quote].label.split(" ")[0] : "—"}
+          </div>
+        </div>
+        <div style={{ flex: 1.2 }}>
+          <div className="lbl" style={{ marginBottom: 4 }}>Greeks Δ / Γ / Θ</div>
+          {gc && <div className="mono" style={{ fontSize: 10, color: T.up }}>
+            C {gc.d.toFixed(2)} · {gc.g.toFixed(3)} · {gc.t.toFixed(2)}
+          </div>}
+          {gp && <div className="mono" style={{ fontSize: 10, color: T.dn, marginTop: 2 }}>
+            P {gp.d.toFixed(2)} · {gp.g.toFixed(3)} · {gp.t.toFixed(2)}
+          </div>}
+        </div>
+      </div>
+
+      {/* front layer */}
+      <div className="crow" style={{ transform: `translateX(${dx}px)`, background: T.obsidian,
+        transition: start.current ? "none" : "transform .26s cubic-bezier(.2,.85,.25,1)" }}
+        onTouchStart={onStart} onTouchMove={onMove} onTouchEnd={onEnd}>
+        {side(cc, k < spot, true)}
+        <div className="cstrike" style={{ position: "relative" }}>
+          {isATM && (
+            <div style={{ position: "absolute", left: -1000, right: -1000, top: 0, height: 1,
+              borderTop: "1px dashed rgba(255,255,255,.34)", pointerEvents: "none" }} />
+          )}
+          <span className="mono" style={{ fontSize: 12.5, fontWeight: 800,
+            color: isCW ? T.up : isPW ? T.dn : T.fg,
+            textShadow: isCW ? `0 0 12px ${T.upGlow}` : isPW ? `0 0 12px ${T.dnGlow}` : "none" }}>
+            {k}
+          </span>
+          {(isCW || isPW) && (
+            <span className="mono" style={{ fontSize: 7, fontWeight: 800, letterSpacing: ".1em",
+              color: isCW ? T.up : T.dn, opacity: .85 }}>{isCW ? "WALL" : "WALL"}</span>
+          )}
+        </div>
+        {side(pp, k > spot, false)}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════ EDITORIAL BIAS CARD ══════════════ */
+function BiasCard({ gex, ticker }) {
+  const map = { bull: T.up, bear: T.dn, capped: T.amber, neutral: T.flip };
+  const c = map[gex.biasKind] || T.flip;
+  const Icon = gex.biasKind === "bull" ? BullIco : gex.biasKind === "bear" ? BearIco : FlatIco;
+  return (
+    <div className="card card-xl" style={{ padding: SP[5], position: "relative", overflow: "hidden", marginBottom: SP[4] }}>
+      <div style={{ position: "absolute", top: -70, right: -50, width: 220, height: 180,
+        background: `radial-gradient(circle,${c}22,transparent 68%)`, filter: "blur(20px)", pointerEvents: "none" }} />
+      <div style={{ display: "flex", alignItems: "center", gap: SP[3], marginBottom: SP[3], position: "relative" }}>
+        <Icon c={c} />
+        <div>
+          <div className="lbl" style={{ marginBottom: 3 }}>{ticker} · Structural Read</div>
+          <div className="mono" style={{ fontSize: 19, fontWeight: 800, color: c, letterSpacing: ".04em",
+            textShadow: `0 0 22px ${c}55` }}>{gex.bias}</div>
+        </div>
+      </div>
+      <div style={{ fontSize: 13.5, lineHeight: 1.62, color: T.fg2, letterSpacing: "-.005em", position: "relative" }}>
+        {gex.biasNote}
+      </div>
+      <div style={{ display: "flex", gap: SP[4], marginTop: SP[4], paddingTop: SP[3],
+        borderTop: `1px solid ${T.hairSoft}`, position: "relative" }}>
+        {[["Regime", gex.totalNet >= 0 ? "Long γ" : "Short γ", gex.totalNet >= 0 ? T.up : T.dn],
+          ["Net GEX", fmtGex(gex.totalNet), T.fg],
+          ["Flip", p2(gex.flip), T.flip]].map(([l, v, col]) => (
+          <div key={l}>
+            <div className="lbl" style={{ marginBottom: 3 }}>{l}</div>
+            <div className="mono" style={{ fontSize: 12.5, fontWeight: 700, color: col }}>{v}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════ APP ══════════════ */
+const NAV = [["map", "MAP", Ico.map], ["chain", "CHAIN", Ico.chain], ["screen", "SCREEN", Ico.screen],
+             ["book", "BOOK", Ico.wallet], ["journal", "JOURNAL", Ico.book]];
+
+function MagmaApp() {
+  const [watch, setWatch] = useState(() => store.get(WATCH_KEY, ["SPY", "QQQ", "NVDA", "TSLA"]));
+  const [chains, setChains] = useState({});
+  const [ticker, setTicker] = useState("SPY");
+  const [tab, setTab] = useState("map");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [expIdx, setExpIdx] = useState(0);
+  const [sel, setSel] = useState(null);
+  const [qty, setQty] = useState(1);
+  const [thesis, setThesis] = useState("");
+  const [acct, setAcct] = useState(() => store.get(ACCT_KEY, DEFAULT_ACCT));
+  const [closeF, setCloseF] = useState(null);
+  const [marking, setMarking] = useState(false);
+  const [scr, setScr] = useState({ minDte: 0, maxDte: 60, side: "both", minOi: 200, liveOnly: true });
+  const [shutter, setShutter] = useState(false);
+  const [openSnap, setOpenSnap] = useState(null);
+  const [picker, setPicker] = useState(false);
+  const [resetArm, setResetArm] = useState(false);
+  const seed = useRef(11);
+
+  useEffect(() => store.set(ACCT_KEY, acct), [acct]);
+  useEffect(() => store.set(WATCH_KEY, watch), [watch]);
+
+  const chain = chains[ticker];
+  const gex = useMemo(() => (chain ? computeGEX(chain) : null), [chain]);
+  const rows = useMemo(() => (chain && gex ? screen(chain, gex, scr) : []), [chain, gex, scr]);
+  const stats = useMemo(() => acctStats(acct), [acct]);
+  const posVal = acct.positions.reduce((s, p) => s + p.curMid * 100 * p.qty, 0);
+  const equity = acct.cash + posVal;
+  const openPnl = acct.positions.reduce((s, p) => s + (p.curMid - p.entryMid) * 100 * p.qty, 0);
+
+  const load = useCallback(async (sym) => {
+    setLoading(true); setErr(""); setTicker(sym);
+    let c;
+    try { c = await fetchCboe(sym); }
+    catch (e) { seed.current++; c = synthChain(sym, seed.current); setErr(`${sym}: live quotes unavailable — modeled data shown`); }
+    setChains((p) => ({ ...p, [sym]: c })); setExpIdx(0); setLoading(false);
+  }, []);
+
+  useEffect(() => { if (!chains.SPY) load("SPY"); }, []);
+
+  const buy = useCallback(() => {
+    if (!sel || !chain || !gex) return;
+    const q = Math.max(1, Math.floor(qty || 1)), cost = sel.mid * 100 * q;
+    if (cost > acct.cash) return;
+    haptic(24);
+    setShutter(true); setTimeout(() => setShutter(false), 430);
+    const pos = {
+      id: Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      ticker: chain.ticker, type: sel.type, strike: sel.strike, expLabel: dayLabel(sel.expDate),
+      expMs: sel.expDate.getTime(), qty: q, entryMid: sel.mid, curMid: sel.mid,
+      entryBid: sel.bid, entryAsk: sel.ask, entryQuote: sel.quote, entrySpot: chain.spot,
+      target: sel.target ?? null, flipAtEntry: gex.flip, cwAtEntry: gex.callWall, pwAtEntry: gex.putWall,
+      biasAtEntry: gex.bias, snap: snapGEX(chain, gex), thesis: thesis.trim(), openedAt: Date.now(),
+    };
+    setAcct((a) => ({ ...a, cash: a.cash - cost, positions: [pos, ...a.positions] }));
+    setSel(null); setQty(1); setThesis(""); setTab("book");
+  }, [sel, chain, gex, qty, thesis, acct.cash]);
+
+  const refreshMarks = useCallback(async () => {
+    if (!acct.positions.length) return;
+    setMarking(true); haptic(10);
+    const syms = [...new Set(acct.positions.map((p) => p.ticker))], fresh = {};
+    for (const s of syms) { try { fresh[s] = await fetchCboe(s); } catch {} }
+    setAcct((a) => ({ ...a, positions: a.positions.map((p) => {
+      const c = fresh[p.ticker]; if (!c) return p;
+      const ds = new Date(p.expMs).toDateString();
+      const m = c.contracts.find((k) => k.type === p.type && Math.abs(k.strike - p.strike) < .001 && k.expDate.toDateString() === ds);
+      return m ? { ...p, curMid: m.mid, curQuote: m.quote, curSpot: c.spot } : { ...p, curSpot: c.spot };
+    })}));
+    setChains((p) => ({ ...p, ...fresh })); setMarking(false);
+  }, [acct.positions]);
+
+  const doClose = useCallback(() => {
+    if (!closeF) return;
+    const m = parseFloat(closeF.exitMid); if (isNaN(m) || m < 0) return;
+    haptic(18);
+    setAcct((a) => {
+      const p = a.positions.find((x) => x.id === closeF.id); if (!p) return a;
+      return { ...a, cash: a.cash + m * 100 * p.qty,
+        positions: a.positions.filter((x) => x.id !== closeF.id),
+        closed: [{ ...p, exitMid: m, closedAt: Date.now(), pnl: (m - p.entryMid) * 100 * p.qty,
+          levelRespected: closeF.levelRespected, note: closeF.note.trim() }, ...a.closed] };
+    });
+    setCloseF(null);
+  }, [closeF]);
+
+  const Stat = ({ label, val, color, sub, flash }) => (
+    <div className="card" style={{ padding: `${SP[3]}px ${SP[4]}px`, flex: "1 1 92px", minWidth: 92, borderRadius: R.md }}>
+      <div className="lbl" style={{ marginBottom: 5 }}>{label}</div>
+      <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: color || T.fg, lineHeight: 1.05, letterSpacing: "-.02em" }}>{val}</div>
+      {sub && <div className="mono" style={{ fontSize: 9.5, color: T.fg4, marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+
+  /* ────────── MAP ────────── */
+  const MapView = (
+    <div className="fade">
+      {loading || !chain || !gex ? (
+        <>
+          <div className="card card-xl" style={{ padding: SP[5], marginBottom: SP[4] }}>
+            <Skel w={110} h={9} style={{ marginBottom: 14 }} /><Skel w="88%" h={20} style={{ marginBottom: 10 }} />
+            <Skel w="100%" h={11} style={{ marginBottom: 6 }} /><Skel w="74%" h={11} />
+          </div>
+          <div className="card card-xl" style={{ padding: SP[5] }}>
+            {Array.from({ length: 11 }).map((_, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "center", marginBottom: 7, gap: 4 }}>
+                <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}><Skel w={`${18 + (i % 5) * 13}%`} h={16} /></div>
+                <div style={{ flex: 1 }}><Skel w={`${22 + ((i + 2) % 5) * 12}%`} h={16} /></div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <BiasCard gex={gex} ticker={ticker} />
+          <div style={{ display: "flex", gap: SP[2], flexWrap: "wrap", marginBottom: SP[4] }}>
+            <Stat label="Spot" val={<Num v={chain.spot} fmt={(x) => x.toFixed(2)} />} />
+            <Stat label="Ceiling" val={gex.callWall?.toFixed(1) ?? "—"} color={T.up} sub="call wall" />
+            <Stat label="Floor" val={gex.putWall?.toFixed(1) ?? "—"} color={T.dn} sub="put wall" />
+            <Stat label="γ-Flip" val={gex.flip?.toFixed(1) ?? "—"} color={T.flip} sub="pivot" />
+          </div>
+          <GexMap chain={chain} gex={gex} />
+          <div className="card" style={{ padding: SP[5], marginTop: SP[4], borderRadius: R.lg }}>
+            <div className="lbl" style={{ marginBottom: SP[3] }}>Structure Ladders</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: SP[3] }}>
+              {[["▲", T.up, gex.upLadder, "upside"], ["●", T.fg, [chain.spot], "spot"], ["▼", T.dn, gex.downLadder, "downside"]].map(([sym, col, arr, lbl]) => (
+                <div key={lbl} style={{ display: "flex", alignItems: "center", gap: SP[3] }}>
+                  <span style={{ color: col, fontSize: 11, width: 12 }}>{sym}</span>
+                  <span className="mono" style={{ fontSize: 13, color: col === T.fg ? T.fg : T.fg2, letterSpacing: ".02em" }}>
+                    {arr.length ? arr.map((x) => p2(x)).join("   →   ") : "—"}
+                  </span>
+                  <span className="lbl" style={{ marginLeft: "auto" }}>{lbl}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  /* ────────── CHAIN ────────── */
+  const ChainView = (() => {
+    if (loading || !chain || !gex) return <div className="fade"><div className="xrow" style={{ marginBottom: SP[4] }}>
+      {Array.from({ length: 5 }).map((_, i) => <Skel key={i} w={64} h={32} r={R.md} />)}</div><SkelChain /></div>;
+    const list = chain.contracts.filter((c) => c.expiryIdx === expIdx);
+    const ks = [...new Set(list.map((c) => c.strike))].sort((a, b) => a - b)
+      .filter((k) => Math.abs(k - chain.spot) / chain.spot <= .14);
+    const byK = {}; list.forEach((c) => { byK[c.strike] = byK[c.strike] || {}; byK[c.strike][c.type] = c; });
+    const atm = ks.findIndex((k) => k >= chain.spot);
+    return (
+      <div className="fade">
+        <div className="xrow" style={{ marginBottom: SP[3] }}>
+          {chain.expiries.map((e, i) => {
+            const d = Math.round(dteOf(e.date));
+            return <button key={i} className={"chip" + (i === expIdx ? " on" : "")}
+              onClick={() => { haptic(6); setExpIdx(i); }}>
+              {d < 1 ? "0DTE" : dayLabel(e.date)}<span style={{ opacity: .5, marginLeft: 5, fontSize: 9.5 }}>{d}d</span>
+            </button>;
+          })}
+        </div>
+        <div className="mono" style={{ fontSize: 9.5, color: T.fg4, marginBottom: SP[3], textAlign: "center", letterSpacing: ".04em" }}>
+          ← swipe any row for quality &amp; greeks · tap a price to trade
+        </div>
+        <div className="card" style={{ overflow: "hidden", borderRadius: R.lg }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 78px 1fr", padding: "10px 12px",
+            borderBottom: `1px solid ${T.hair}`, position: "sticky", top: 0, zIndex: 5 }} className="glass">
+            <div className="lbl" style={{ textAlign: "center", color: T.up }}>Calls</div>
+            <div className="lbl" style={{ textAlign: "center" }}>Strike</div>
+            <div className="lbl" style={{ textAlign: "center", color: T.dn }}>Puts</div>
+          </div>
+          {ks.map((k, i) => (
+            <ChainRow key={k} k={k} cc={byK[k]?.C} pp={byK[k]?.P} spot={chain.spot}
+              isCW={k === gex.callWall} isPW={k === gex.putWall} isATM={i === atm}
+              onPick={(c, isCall) => { setSel({ ...c, target: isCall ? gex.callWall : gex.putWall }); setQty(1); setThesis(""); }} />
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: SP[4], marginTop: SP[3], justifyContent: "center", flexWrap: "wrap" }}>
+          {Object.entries(QUALITY).slice(0, 3).map(([k, v]) => (
+            <span key={k} className="mono" style={{ fontSize: 9.5, color: T.fg4 }}>
+              <span className="qd" style={{ background: v.c }} />{v.label.split(" —")[0].split(" ").slice(0, 2).join(" ")}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  })();
+
+  /* ────────── SCREENER ────────── */
+  const ScreenView = (
+    <div className="fade">
+      <div className="card card-xl" style={{ padding: SP[5], marginBottom: SP[4] }}>
+        <div className="lbl" style={{ marginBottom: SP[3] }}>Filters</div>
+        <div className="xrow" style={{ marginBottom: SP[2] }}>
+          {[["0–7d", 0, 7], ["0–30d", 0, 30], ["7–45d", 7, 45], ["30–90d", 30, 90], ["All", 0, 400]].map(([l, a, b]) => (
+            <button key={l} className={"chip" + (scr.minDte === a && scr.maxDte === b ? " on" : "")}
+              onClick={() => { haptic(6); setScr((s) => ({ ...s, minDte: a, maxDte: b })); }}>{l}</button>
+          ))}
+        </div>
+        <div className="xrow">
+          {["both", "calls", "puts"].map((v) => (
+            <button key={v} className={"chip" + (scr.side === v ? " on" : "")}
+              onClick={() => { haptic(6); setScr((s) => ({ ...s, side: v })); }}>{v}</button>
+          ))}
+          <button className={"chip" + (scr.liveOnly ? " on" : "")}
+            onClick={() => { haptic(6); setScr((s) => ({ ...s, liveOnly: !s.liveOnly })); }}>
+            {scr.liveOnly ? "✓ live only" : "incl. stale"}
+          </button>
+        </div>
+      </div>
+      {!rows.length && (
+        <div className="card" style={{ padding: SP[6], textAlign: "center" }}>
+          <div className="mono" style={{ fontSize: 12, color: T.fg3 }}>No qualifying structures.</div>
+        </div>
+      )}
+      <div className="card divide" style={{ overflow: "hidden", borderRadius: R.lg }}>
+        {rows.map((r, i) => (
+          <div key={i} className="press" style={{ padding: `${SP[3]}px ${SP[4]}px`, display: "flex", alignItems: "center", gap: SP[3], cursor: "pointer" }}
+            onClick={() => { haptic(8); setSel(r); setQty(1); setThesis(""); }}>
+            <div style={{ width: 3, height: 34, borderRadius: 99, background: r.isCall ? T.up : T.dn,
+              boxShadow: `0 0 12px ${r.isCall ? T.upGlow : T.dnGlow}` }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="mono" style={{ fontSize: 13, fontWeight: 700 }}>
+                <span className="qd" style={{ background: QUALITY[r.quote].c }} />
+                {r.strike}{r.type}<span style={{ color: T.fg4, fontWeight: 400, marginLeft: 6, fontSize: 10.5 }}>{r.expLabel} · {Math.round(r.days)}d</span>
+              </div>
+              <div className="mono" style={{ fontSize: 9.5, color: T.fg4, marginTop: 3 }}>
+                {p2(r.mid)} → {p2(r.target)} · needs {(r.moveNeeded * 100).toFixed(1)}% · OI {r.oi.toLocaleString()}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div className="mono" style={{ fontSize: 16, fontWeight: 800, color: r.rr >= 2 ? T.up : T.fg, letterSpacing: "-.03em" }}>
+                {r.rr.toFixed(1)}<span style={{ fontSize: 10, opacity: .6 }}>x</span>
+              </div>
+              <div className="lbl" style={{ marginTop: 2 }}>R:R</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  /* ────────── BOOK (paper account) ────────── */
+  const BookView = (
+    <div className="fade">
+      <div style={{ display: "flex", gap: SP[2], flexWrap: "wrap", marginBottom: SP[4] }}>
+        <Stat label="Equity" val={<Num v={equity} fmt={usd} />} color={equity >= 100000 ? T.up : T.dn} sub={pctS((equity / 100000 - 1) * 100)} />
+        <Stat label="Cash" val={usd(acct.cash)} />
+        <Stat label="Open P&L" val={<Num v={openPnl} fmt={usd} />} color={openPnl >= 0 ? T.up : T.dn} />
+        <Stat label="Realized" val={usd(stats.total)} color={stats.total >= 0 ? T.up : T.dn} sub={stats.n + " closed"} />
+      </div>
+      <div style={{ display: "flex", gap: SP[2], marginBottom: SP[4] }}>
+        <button className="btn" onClick={refreshMarks} disabled={marking || !acct.positions.length} style={{ flex: 1 }}>
+          {marking ? "MARKING…" : "↻ REFRESH MARKS"}
+        </button>
+        <button className="btn" style={{ borderColor: resetArm ? T.dn : T.hair, color: resetArm ? T.dn : T.fg3 }}
+          onClick={() => { if (!resetArm) { setResetArm(true); setTimeout(() => setResetArm(false), 4000); } else { setAcct(DEFAULT_ACCT); setResetArm(false); } }}>
+          {resetArm ? "CONFIRM" : "RESET"}
+        </button>
+      </div>
+      {!acct.positions.length && (
+        <div className="card" style={{ padding: SP[6], textAlign: "center", marginBottom: SP[4] }}>
+          <div style={{ fontSize: 13, color: T.fg3, lineHeight: 1.6 }}>
+            No open positions.<br />Tap a contract in the chain or screener to open a ticket.
+          </div>
+        </div>
+      )}
+      {acct.positions.map((p) => {
+        const pnl = (p.curMid - p.entryMid) * 100 * p.qty;
+        const pct = p.entryMid ? (p.curMid / p.entryMid - 1) * 100 : 0;
+        const closing = closeF?.id === p.id;
+        return (
+          <div key={p.id} className="card card-xl" style={{ marginBottom: SP[3], overflow: "hidden" }}>
+            <div style={{ padding: SP[4] }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: SP[2] }}>
+                <span className="mono" style={{ fontSize: 15, fontWeight: 800 }}>{p.ticker} {p.strike}{p.type}</span>
+                <span className="mono" style={{ fontSize: 10, color: T.fg4 }}>{p.expLabel} · ×{p.qty}</span>
+                <span className="mono" style={{ marginLeft: "auto", fontSize: 15, fontWeight: 800, color: pnl >= 0 ? T.up : T.dn }}>
+                  <Num v={pnl} fmt={usd} />
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: SP[4], marginTop: SP[3] }}>
+                {[["Entry", p2(p.entryMid)], ["Mark", p2(p.curMid)], ["Return", pctS(pct)], ["Bias@entry", p.biasAtEntry]].map(([l, v]) => (
+                  <div key={l}><div className="lbl" style={{ marginBottom: 3 }}>{l}</div>
+                    <div className="mono" style={{ fontSize: 11.5, color: l === "Return" ? (pct >= 0 ? T.up : T.dn) : T.fg2 }}>{v}</div></div>
+                ))}
+              </div>
+              {p.entryQuote && p.entryQuote !== "live" && (
+                <div className="mono" style={{ fontSize: 10, color: T.dn, marginTop: SP[3] }}>⚠ filled on {p.entryQuote} quote</div>
+              )}
+              <button className={"btn " + (closing ? "dn" : "")} style={{ marginTop: SP[4], width: "100%" }}
+                onClick={() => { haptic(8); setCloseF(closing ? null : { id: p.id, exitMid: p.curMid.toFixed(2), levelRespected: null, note: "" }); }}>
+                {closing ? "CANCEL" : "CLOSE POSITION"}
+              </button>
+            </div>
+            {closing && (
+              <div className="fade" style={{ padding: SP[4], borderTop: `1px solid ${T.hair}`, background: "rgba(255,0,85,.045)" }}>
+                <div className="lbl" style={{ marginBottom: SP[2] }}>Exit mid</div>
+                <input className="inp" value={closeF.exitMid} inputMode="decimal"
+                  onChange={(e) => setCloseF((f) => ({ ...f, exitMid: e.target.value }))} style={{ marginBottom: SP[4] }} />
+                <div className="lbl" style={{ marginBottom: SP[2] }}>Did the GEX levels hold?</div>
+                <div style={{ display: "flex", gap: SP[2], marginBottom: SP[4] }}>
+                  {[["YES", true], ["NO", false]].map(([l, v]) => (
+                    <button key={l} className={"btn " + (closeF.levelRespected === v ? (v ? "up" : "dn") : "")} style={{ flex: 1 }}
+                      onClick={() => { haptic(6); setCloseF((f) => ({ ...f, levelRespected: v })); }}>{l}</button>
+                  ))}
+                </div>
+                <input className="inp" placeholder="What happened?" value={closeF.note}
+                  onChange={(e) => setCloseF((f) => ({ ...f, note: e.target.value }))} style={{ marginBottom: SP[4] }} />
+                <button className="btn pri" style={{ width: "100%" }} onClick={doClose}>CONFIRM CLOSE</button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  /* ────────── JOURNAL (ledger) ────────── */
+  const entries = [...acct.positions.map((p) => ({ ...p, _open: true })), ...acct.closed];
+  const JournalView = (
+    <div className="fade">
+      <div style={{ display: "flex", gap: SP[2], flexWrap: "wrap", marginBottom: SP[4] }}>
+        <Stat label="Logged" val={entries.length} sub={stats.n + " closed"} />
+        <Stat label="Win rate" val={stats.winRate == null ? "—" : (stats.winRate * 100).toFixed(0) + "%"} color={stats.winRate >= .5 ? T.up : T.dn} />
+        <Stat label="Avg R" val={stats.n ? (stats.avgR >= 0 ? "+" : "") + stats.avgR.toFixed(2) + "R" : "—"} color={stats.avgR >= 0 ? T.up : T.dn} />
+        <Stat label="Level acc." val={stats.levelAcc == null ? "—" : (stats.levelAcc * 100).toFixed(0) + "%"} color={T.flip} sub="did levels hold" />
+      </div>
+      {stats.n > 0 && stats.n < 40 && (
+        <div className="mono" style={{ fontSize: 10, color: T.fg4, marginBottom: SP[4], letterSpacing: ".02em" }}>
+          {stats.n} closed — directional only. 40+ before drawing conclusions.
+        </div>
+      )}
+      {!entries.length && (
+        <div className="card" style={{ padding: SP[6], textAlign: "center" }}>
+          <div style={{ fontSize: 13, color: T.fg3, lineHeight: 1.65 }}>
+            The ledger writes itself. Every ticket captures a snapshot of the gamma structure at entry — bias, flip, walls, spot.
+          </div>
+        </div>
+      )}
+      {entries.map((e) => {
+        const isOpen = openSnap === e.id;
+        return (
+          <div key={e.id} className="card card-xl" style={{ padding: SP[4], marginBottom: SP[3] }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: SP[2], flexWrap: "wrap" }}>
+              <span className="mono" style={{ fontSize: 14, fontWeight: 800 }}>{e.ticker} {e.strike}{e.type}</span>
+              <span className="mono" style={{ fontSize: 10, color: T.fg4 }}>{e.expLabel} ×{e.qty}</span>
+              {e._open
+                ? <span className="mono" style={{ fontSize: 8, fontWeight: 800, color: T.flip, border: `1px solid ${T.flip}55`,
+                    borderRadius: 99, padding: "3px 8px", letterSpacing: ".12em" }}>OPEN</span>
+                : <span className="mono" style={{ marginLeft: "auto", fontSize: 14, fontWeight: 800, color: e.pnl >= 0 ? T.up : T.dn }}>{usd(e.pnl)}</span>}
+            </div>
+            <div className="mono" style={{ fontSize: 10, color: T.fg4, marginTop: SP[2], lineHeight: 1.8 }}>
+              {new Date(e.openedAt).toLocaleDateString()} · entry {p2(e.entryMid)} @ spot {p2(e.entrySpot)} · bias {e.biasAtEntry}
+              {!e._open && <> · exit {p2(e.exitMid)} · levels {e.levelRespected == null ? "—" : e.levelRespected ? "held ✓" : "failed ✕"}</>}
+            </div>
+            {e.thesis && <div style={{ fontSize: 12.5, marginTop: SP[3], color: T.fg2, fontStyle: "italic",
+              paddingLeft: SP[3], borderLeft: `2px solid ${T.hair}`, lineHeight: 1.55 }}>{e.thesis}</div>}
+            {e.note && <div style={{ fontSize: 12, marginTop: SP[2], color: T.fg3 }}>{e.note}</div>}
+            {e.snap && (
+              <>
+                <button className="btn" style={{ marginTop: SP[3], width: "100%", fontSize: 10 }}
+                  onClick={() => { haptic(6); setOpenSnap(isOpen ? null : e.id); }}>
+                  {isOpen ? "▲ HIDE STRUCTURE SNAPSHOT" : "▼ VIEW STRUCTURE SNAPSHOT"}
+                </button>
+                {isOpen && (
+                  <div className="fade" style={{ marginTop: SP[3], padding: SP[4], background: "rgba(0,0,0,.42)",
+                    borderRadius: R.md, border: `1px solid ${T.hairSoft}` }}>
+                    <div className="lbl" style={{ marginBottom: SP[3] }}>GEX at entry · {new Date(e.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+                    <MiniGex snap={e.snap} w={252} h={72} />
+                    <div className="mono" style={{ fontSize: 9.5, color: T.fg4, marginTop: SP[3], lineHeight: 1.7 }}>
+                      flip {p2(e.flipAtEntry)} · walls {p2(e.pwAtEntry)} / {p2(e.cwAtEntry)}<br />
+                      <span style={{ color: T.up }}>▮</span> call γ &nbsp; <span style={{ color: T.dn }}>▮</span> put γ &nbsp;
+                      <span style={{ color: T.flip }}>┊</span> flip &nbsp; <span style={{ color: T.fg2 }}>│</span> spot
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  /* ────────── RENDER ────────── */
+  return (
+    <div className="mg">
+      <style>{CSS}</style>
+      {shutter && <div className="shutter" />}
+
+      {/* app bar */}
+      <div className="appbar glass">
+        <span className="wordmark">MAGMA</span>
+        <button className="chip press-sm" onClick={() => { haptic(8); setPicker(true); }}
+          style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 800, fontSize: 12.5, color: T.fg }}>
+          {ticker}
+          <svg viewBox="0 0 24 24" style={{ width: 11, height: 11 }} stroke="currentColor" fill="none" strokeWidth="3"><path d="M6 9l6 6 6-6" /></svg>
+        </button>
+        {chain && <span className="mono" style={{ fontSize: 13, color: T.fg2, fontWeight: 600 }}>{p2(chain.spot)}</span>}
+        <span className="mono" style={{ marginLeft: "auto", fontSize: 8.5, letterSpacing: ".1em",
+          color: chain?.source === "LIVE" ? T.up : T.fg4 }}>
+          {chain?.source === "LIVE" ? <><span className="livedot" /> LIVE·15M</> : chain ? "MODELED" : ""}
+        </span>
+      </div>
+
+      {err && <div className="mono" style={{ fontSize: 10, color: T.warn, marginBottom: SP[3] }}>⚠ {err}</div>}
+
+      {tab === "map" && MapView}
+      {tab === "chain" && ChainView}
+      {tab === "screen" && ScreenView}
+      {tab === "book" && BookView}
+      {tab === "journal" && JournalView}
+
+      <div style={{ marginTop: SP[8], fontSize: 9.5, color: T.fg4, lineHeight: 1.6 }}>
+        Educational tool. CBOE quotes are 15 minutes delayed; contracts flagged stale are priced off the last trade, not a live quote, and can differ materially from your broker. GEX assumes the standard dealer convention. Not financial advice.
+      </div>
+
+      {/* nav */}
+      <div className="nav glass">
+        {NAV.map(([id, label, icon]) => (
+          <button key={id} className={tab === id ? "on" : ""} onClick={() => { haptic(6); setTab(id); }}>
+            <NIco d={icon} />{label}
+          </button>
+        ))}
+      </div>
+
+      {/* ticker picker */}
+      {picker && (
+        <div className="scrim" onClick={(e) => e.target === e.currentTarget && setPicker(false)}>
+          <div className="sheet">
+            <div className="grab" />
+            <div className="lbl" style={{ marginBottom: SP[4] }}>Select Underlying</div>
+            <input className="inp" autoFocus placeholder="Search ticker…" style={{ marginBottom: SP[4], textTransform: "uppercase" }}
+              onKeyDown={(e) => { if (e.key === "Enter") { const v = e.target.value.toUpperCase().trim();
+                if (v) { setWatch((w) => (w.includes(v) ? w : [...w, v])); setPicker(false); load(v); } } }} />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: SP[2] }}>
+              {[...new Set([...watch, "SPY", "QQQ", "IWM", "NVDA", "TSLA", "AAPL", "META", "AMD", "MSFT", "AMZN"])].map((s) => (
+                <button key={s} className={"chip" + (s === ticker ? " on" : "")}
+                  onClick={() => { haptic(8); setPicker(false); load(s); }}>{s}</button>
+              ))}
+            </div>
+            <button className="btn" style={{ width: "100%", marginTop: SP[5] }} onClick={() => setPicker(false)}>CLOSE</button>
+          </div>
+        </div>
+      )}
+
+      {/* trade ticket */}
+      {sel && chain && gex && (() => {
+        const q = Math.max(1, Math.floor(qty || 1)), cost = sel.mid * 100 * q;
+        const pctEq = (cost / Math.max(1, equity)) * 100, tooBig = cost > acct.cash;
+        const T_ = Math.max(sel.days, .25) / 365;
+        const dl = bsDelta(chain.spot, sel.strike, T_, sel.iv || .25, sel.type === "C");
+        const gm = sel.gammaProvided ?? bsGamma(chain.spot, sel.strike, T_, sel.iv || .25);
+        const th = bsTheta(chain.spot, sel.strike, T_, sel.iv || .25, sel.type === "C");
+        const vg = bsVega(chain.spot, sel.strike, T_, sel.iv || .25);
+        const be = sel.type === "C" ? sel.strike + sel.mid : sel.strike - sel.mid;
+        const qi = QUALITY[sel.quote], isCall = sel.type === "C";
+        return (
+          <div className="scrim" onClick={(e) => e.target === e.currentTarget && setSel(null)}>
+            <div className="sheet">
+              <div className="grab" />
+              <div style={{ display: "flex", alignItems: "center", gap: SP[3], marginBottom: SP[4] }}>
+                <div style={{ width: 3, height: 38, borderRadius: 99, background: isCall ? T.up : T.dn,
+                  boxShadow: `0 0 14px ${isCall ? T.upGlow : T.dnGlow}` }} />
+                <div>
+                  <div className="mono" style={{ fontSize: 21, fontWeight: 800, letterSpacing: "-.02em" }}>
+                    {chain.ticker} {sel.strike}{sel.type}
+                  </div>
+                  <div className="mono" style={{ fontSize: 10.5, color: T.fg4, marginTop: 3 }}>
+                    {dayLabel(sel.expDate)} · {Math.round(sel.days)}d · <span style={{ color: qi.c }}>{qi.label}</span>
+                  </div>
+                </div>
+              </div>
+
+              {sel.quote !== "live" && (
+                <div className="card" style={{ padding: SP[4], marginBottom: SP[4], borderRadius: R.md,
+                  borderColor: "rgba(255,0,85,.35)", background: "rgba(255,0,85,.06)" }}>
+                  <div style={{ fontSize: 12.5, lineHeight: 1.55, color: T.fg2 }}>
+                    {sel.quote === "stale"
+                      ? "No live bid/ask. This price is the last recorded trade and may be hours old — expect it to differ from your broker."
+                      : "Only one side of the market is quoted. Treat this price as unreliable."}
+                  </div>
+                </div>
+              )}
+
+              <div className="card" style={{ padding: SP[4], marginBottom: SP[3], borderRadius: R.md }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", textAlign: "center" }}>
+                  {[["BID", sel.bid > 0 ? sel.bid.toFixed(2) : "—", T.dn], ["MID", sel.mid.toFixed(2), T.fg], ["ASK", sel.ask > 0 ? sel.ask.toFixed(2) : "—", T.up]].map(([l, v, c]) => (
+                    <div key={l}>
+                      <div className="lbl" style={{ marginBottom: 5 }}>{l}</div>
+                      <div className="mono" style={{ fontSize: 18, fontWeight: 800, color: c, letterSpacing: "-.03em" }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: SP[2], marginTop: SP[4],
+                  paddingTop: SP[3], borderTop: `1px solid ${T.hairSoft}`, textAlign: "center" }}>
+                  {[["Δ", dl.toFixed(2)], ["Γ", gm.toFixed(3)], ["Θ", th.toFixed(2)], ["V", vg.toFixed(2)]].map(([l, v]) => (
+                    <div key={l}>
+                      <div className="mono" style={{ fontSize: 9.5, color: T.fg4, marginBottom: 3 }}>{l}</div>
+                      <div className="mono" style={{ fontSize: 11.5, color: T.fg2 }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mono" style={{ fontSize: 9.5, color: T.fg4, textAlign: "center", marginTop: SP[3] }}>
+                  IV {((sel.iv || 0) * 100).toFixed(1)}% · OI {sel.oi.toLocaleString()} · vol {(sel.vol || 0).toLocaleString()}
+                  {sel.spreadPct != null && ` · spread ${(sel.spreadPct * 100).toFixed(1)}%`}
+                </div>
+              </div>
+
+              <div className="card" style={{ padding: SP[4], marginBottom: SP[4], borderRadius: R.md }}>
+                <div className="lbl" style={{ marginBottom: SP[3] }}>Structure Context</div>
+                <div className="mono" style={{ fontSize: 11.5, color: T.fg2, lineHeight: 2 }}>
+                  breakeven {p2(be)} · target {p2(sel.target)}<br />
+                  γ-flip <span style={{ color: T.flip }}>{p2(gex.flip)}</span> · walls <span style={{ color: T.dn }}>{p2(gex.putWall)}</span> / <span style={{ color: T.up }}>{p2(gex.callWall)}</span>
+                  {sel.rr != null && <><br /><span style={{ color: T.up, fontWeight: 800 }}>{sel.rr.toFixed(1)}x R:R</span> · needs {(sel.moveNeeded * 100).toFixed(1)}% move</>}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "flex-end", gap: SP[3], marginBottom: SP[4] }}>
+                <div>
+                  <div className="lbl" style={{ marginBottom: SP[2] }}>Contracts</div>
+                  <div style={{ display: "flex", gap: SP[2], alignItems: "center" }}>
+                    <button className="btn" style={{ padding: "10px 14px" }} onClick={() => { haptic(5); setQty((x) => Math.max(1, (+x || 1) - 1)); }}>−</button>
+                    <input className="inp" inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)}
+                      style={{ width: 62, textAlign: "center", padding: "11px 4px" }} />
+                    <button className="btn" style={{ padding: "10px 14px" }} onClick={() => { haptic(5); setQty((x) => (+x || 1) + 1); }}>+</button>
+                  </div>
+                </div>
+                <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                  <div className="mono" style={{ fontSize: 18, fontWeight: 800, color: tooBig ? T.dn : T.fg, letterSpacing: "-.03em" }}>{usd(cost)}</div>
+                  <div className="mono" style={{ fontSize: 9.5, color: pctEq > 5 ? T.warn : T.fg4, marginTop: 3 }}>
+                    {pctEq.toFixed(1)}% of equity{pctEq > 5 ? " ⚠" : ""}
+                  </div>
+                </div>
+              </div>
+
+              <input className="inp" placeholder="Thesis — why this structure?" value={thesis}
+                onChange={(e) => setThesis(e.target.value)} style={{ marginBottom: SP[4], fontSize: 14 }} />
+              {tooBig && <div className="mono" style={{ fontSize: 11, color: T.dn, marginBottom: SP[3] }}>Insufficient cash ({usd(acct.cash)})</div>}
+              <div style={{ display: "flex", gap: SP[2] }}>
+                <button className="btn" style={{ flex: 1 }} onClick={() => setSel(null)}>CANCEL</button>
+                <button className="btn pri" style={{ flex: 2 }} disabled={tooBig} onClick={buy}>PAPER BUY {q}×</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+const el = document.getElementById("root");
+el.innerHTML = "";
+ReactDOM.createRoot(el).render(React.createElement(MagmaApp));
+</script>
+</body>
+</html>
